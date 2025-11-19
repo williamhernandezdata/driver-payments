@@ -29,13 +29,14 @@ def load_data():
     df = pd.DataFrame(data)
     
     # --- CLEAN DATA TYPES ---
-    # Ensure dates are actual dates for the date picker to work
     if 'job_date' in df.columns:
         df['job_date'] = pd.to_datetime(df['job_date'], errors='coerce')
     
-    # Ensure numeric columns are treated as numbers
-    if 'total_paid' in df.columns:
-        df['total_paid'] = pd.to_numeric(df['total_paid'], errors='coerce').fillna(0)
+    money_cols = ['total_paid', 'total_fare', 'coop_commission', 'tips', 'tolls', 'base_fare']
+    for col in money_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False)
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
     return df
 
@@ -52,38 +53,31 @@ if df.empty:
     st.stop()
 
 # ==========================================
-# 🔍 FILTER DASHBOARD SECTION
+# 🔍 FILTER DASHBOARD
 # ==========================================
 st.markdown("### 🔍 Search Filters")
 
-# We use an "Expander" so the filters don't clutter the screen forever. 
-# Users can click to hide/show them.
 with st.expander("Open Search Options", expanded=True):
     
-    # Row 1: Key Identifiers
     col1, col2, col3 = st.columns(3)
     with col1:
-        search_name = st.text_input("👤 Driver Name (First or Last)", placeholder="e.g. Freddy")
+        search_name = st.text_input("👤 Driver Name", placeholder="e.g. Freddy")
     with col2:
         search_driver_id = st.text_input("🆔 Driver ID", placeholder="e.g. 5800905")
     with col3:
         search_trip_id = st.text_input("🚕 Trip ID", placeholder="e.g. 512345")
 
-    # Row 2: Status & Banking
     col4, col5, col6 = st.columns(3)
     with col4:
-        # Get unique NACHA titles for a dropdown (easier than typing)
         nacha_options = ["All"] + sorted(list(df['nacha_title'].astype(str).unique()))
         search_nacha = st.selectbox("xBaa NACHA File", nacha_options)
     with col5:
-        # Get unique Statuses for a dropdown
         if 'status' in df.columns:
             status_options = ["All"] + sorted(list(df['status'].astype(str).unique()))
             search_status = st.selectbox("✅ Status", status_options)
         else:
             search_status = "All"
     with col6:
-        # Date Range Picker
         min_date = df['job_date'].min()
         max_date = df['job_date'].max()
         date_range = st.date_input("jv Date Range", [min_date, max_date])
@@ -93,53 +87,111 @@ with st.expander("Open Search Options", expanded=True):
 # ==========================================
 filtered_df = df.copy()
 
-# 1. Driver Name Filter
 if search_name:
-    # Combine First and Last name columns for search if they exist
     if 'first_name' in filtered_df.columns and 'last_name' in filtered_df.columns:
         filtered_df['full_name'] = filtered_df['first_name'].astype(str) + " " + filtered_df['last_name'].astype(str)
         filtered_df = filtered_df[filtered_df['full_name'].str.contains(search_name, case=False, na=False)]
     else:
-        # Fallback global search if columns are named differently
         mask = filtered_df.astype(str).apply(lambda x: x.str.contains(search_name, case=False)).any(axis=1)
         filtered_df = filtered_df[mask]
 
-# 2. Driver ID Filter
 if search_driver_id:
-    # Convert to string to avoid "text vs number" errors
     filtered_df = filtered_df[filtered_df['driver_num'].astype(str).str.contains(search_driver_id, na=False)]
 
-# 3. Trip ID Filter
 if search_trip_id:
     filtered_df = filtered_df[filtered_df['trip_id'].astype(str).str.contains(search_trip_id, na=False)]
 
-# 4. NACHA Filter
 if search_nacha != "All":
     filtered_df = filtered_df[filtered_df['nacha_title'].astype(str) == search_nacha]
 
-# 5. Status Filter
 if search_status != "All":
     filtered_df = filtered_df[filtered_df['status'].astype(str) == search_status]
 
-# 6. Date Filter
 if len(date_range) == 2:
     start_date, end_date = date_range
-    # Filter rows where job_date is within range
     mask = (filtered_df['job_date'].dt.date >= start_date) & (filtered_df['job_date'].dt.date <= end_date)
     filtered_df = filtered_df[mask]
 
 # ==========================================
-# 📊 DISPLAY RESULTS
+# 💰 FINANCIAL SUB-TOTALS
 # ==========================================
 st.markdown("---")
-st.metric("Total Records Found", len(filtered_df))
+st.markdown("### 💰 Financial Summary")
 
-# Format the date columns nicely for display (removes the "00:00:00" time part)
+total_paid_sum = filtered_df['total_paid'].sum() if 'total_paid' in filtered_df.columns else 0
+total_comm_sum = filtered_df['coop_commission'].sum() if 'coop_commission' in filtered_df.columns else 0
+total_tips_sum = filtered_df['tips'].sum() if 'tips' in filtered_df.columns else 0
+total_tolls_sum = filtered_df['tolls'].sum() if 'tolls' in filtered_df.columns else 0
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Total Payout", f"${total_paid_sum:,.2f}")
+m2.metric("Total Commission", f"${total_comm_sum:,.2f}")
+m3.metric("Total Tips", f"${total_tips_sum:,.2f}")
+m4.metric("Total Tolls", f"${total_tolls_sum:,.2f}")
+
+# ==========================================
+# 🎨 COLOR STYLING & LEGEND
+# ==========================================
+st.markdown("---")
+st.markdown("### 📋 Trip List")
+
+# 1. THE LEGEND
+# We use HTML/CSS badges to make it look professional
+st.markdown("""
+    <style>
+        .badge-green {background-color: #d4edda; color: #155724; padding: 4px 8px; border-radius: 4px; font-weight: bold;}
+        .badge-yellow {background-color: #fff3cd; color: #856404; padding: 4px 8px; border-radius: 4px; font-weight: bold;}
+    </style>
+    <p>
+        <span class="badge-green">Processed</span> = Trip ID box is Green &nbsp;&nbsp;&nbsp;
+        <span class="badge-yellow">Pending</span> = Trip ID box is Yellow
+    </p>
+""", unsafe_allow_html=True)
+
+# 2. THE STYLING FUNCTION
+def highlight_trip_id(row):
+    # Default style (transparent)
+    styles = [''] * len(row)
+    
+    # Get the column index for trip_id
+    # We only want to color the cell if the column name is 'trip_id'
+    if 'status' in row and 'trip_id' in row.index:
+        status = str(row['status'])
+        
+        # Define Colors
+        if status == 'Processed':
+            color = 'background-color: #d4edda; color: black' # Greenish
+        elif status == 'Pending':
+            color = 'background-color: #fff3cd; color: black' # Yellowish
+        else:
+            return styles # Return empty styles if neither
+
+        # Apply the color ONLY to the trip_id column
+        # row.index.get_loc returns the integer position of the column
+        try:
+            trip_idx = row.index.get_loc('trip_id')
+            styles[trip_idx] = color
+        except:
+            pass # Safe fail
+            
+    return styles
+
+# ==========================================
+# 📊 DISPLAY DATA
+# ==========================================
+
+st.markdown(f"**Showing {len(filtered_df)} trip records**")
+
 if 'job_date' in filtered_df.columns:
     filtered_df['job_date'] = filtered_df['job_date'].dt.strftime('%Y-%m-%d')
 
+# Apply the styles
+# We use .style.apply to run our coloring function on every row
+styled_df = filtered_df.style.apply(highlight_trip_id, axis=1)
+
 st.dataframe(
-    filtered_df, 
+    styled_df, 
     use_container_width=True, 
-    hide_index=True
+    hide_index=True,
+    height=800 # Make the table taller
 )
