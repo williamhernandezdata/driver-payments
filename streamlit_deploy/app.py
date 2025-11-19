@@ -73,7 +73,6 @@ with st.expander("Open Search Options", expanded=True):
     # Row 2
     col4, col5, col6 = st.columns(3)
     with col4:
-        # Fixed Typo: Removed "xBaa"
         nacha_options = ["All"] + sorted(list(df['nacha_title'].astype(str).unique()))
         search_nacha = st.selectbox("📄 NACHA File", nacha_options)
     with col5:
@@ -90,10 +89,15 @@ with st.expander("Open Search Options", expanded=True):
             search_status = "All"
             
     # Row 3 (Date)
-    # Fixed Typo: Removed "jv"
+    # NEW: We set value=[] so it starts empty. 
     min_date = df['job_date'].min()
     max_date = df['job_date'].max()
-    date_range = st.date_input("📅 Date Range", [min_date, max_date])
+    date_range = st.date_input(
+        "📅 Date Range (Optional)", 
+        value=[],  # <--- THIS MAKES IT START EMPTY
+        min_value=min_date, 
+        max_value=max_date
+    )
 
 # ==========================================
 # 🔄 FILTERING LOGIC
@@ -123,6 +127,8 @@ if search_account != "All" and 'account' in filtered_df.columns:
 if search_status != "All":
     filtered_df = filtered_df[filtered_df['status'].astype(str) == search_status]
 
+# DATE FILTER LOGIC (Updated)
+# Only filter if the user has selected BOTH a start and end date
 if len(date_range) == 2:
     start_date, end_date = date_range
     mask = (filtered_df['job_date'].dt.date >= start_date) & (filtered_df['job_date'].dt.date <= end_date)
@@ -194,11 +200,10 @@ if 'job_date' in filtered_df.columns:
 if 'status' in filtered_df.columns:
     filtered_df = filtered_df.rename(columns={'status': 'Payment Status'})
 
-# 3. Reset Index (Prevents some rendering errors)
+# 3. Reset Index
 filtered_df = filtered_df.reset_index(drop=True)
 
 # 4. DECIDE: TO STYLE OR NOT TO STYLE?
-# Styling 27k rows crashes Streamlit. We only style if filtering returns < 2000 rows.
 if len(filtered_df) < 2000:
     final_df = filtered_df.style.apply(highlight_trip_id, axis=1)
 else:
