@@ -59,6 +59,7 @@ st.markdown("### 🔍 Search Filters")
 
 with st.expander("Open Search Options", expanded=True):
     
+    # Row 1
     col1, col2, col3 = st.columns(3)
     with col1:
         search_name = st.text_input("👤 Driver Name", placeholder="e.g. Freddy")
@@ -67,20 +68,30 @@ with st.expander("Open Search Options", expanded=True):
     with col3:
         search_trip_id = st.text_input("🚕 Trip ID", placeholder="e.g. 512345")
 
+    # Row 2
     col4, col5, col6 = st.columns(3)
     with col4:
         nacha_options = ["All"] + sorted(list(df['nacha_title'].astype(str).unique()))
         search_nacha = st.selectbox("xBaa NACHA File", nacha_options)
     with col5:
+        # ACCOUNT FILTER (NEW)
+        # We check if 'account' exists to prevent errors if the sheet isn't updated yet
+        if 'account' in df.columns:
+            acc_options = ["All"] + sorted(list(df['account'].astype(str).unique()))
+            search_account = st.selectbox("🏢 Account", acc_options)
+        else:
+            search_account = "All"
+    with col6:
         if 'status' in df.columns:
             status_options = ["All"] + sorted(list(df['status'].astype(str).unique()))
             search_status = st.selectbox("✅ Status", status_options)
         else:
             search_status = "All"
-    with col6:
-        min_date = df['job_date'].min()
-        max_date = df['job_date'].max()
-        date_range = st.date_input("jv Date Range", [min_date, max_date])
+            
+    # Row 3 (Date)
+    min_date = df['job_date'].min()
+    max_date = df['job_date'].max()
+    date_range = st.date_input("jv Date Range", [min_date, max_date])
 
 # ==========================================
 # 🔄 FILTERING LOGIC
@@ -103,6 +114,10 @@ if search_trip_id:
 
 if search_nacha != "All":
     filtered_df = filtered_df[filtered_df['nacha_title'].astype(str) == search_nacha]
+
+# NEW ACCOUNT FILTER LOGIC
+if search_account != "All" and 'account' in filtered_df.columns:
+    filtered_df = filtered_df[filtered_df['account'].astype(str) == search_account]
 
 if search_status != "All":
     filtered_df = filtered_df[filtered_df['status'].astype(str) == search_status]
@@ -135,63 +150,44 @@ m4.metric("Total Tolls", f"${total_tolls_sum:,.2f}")
 st.markdown("---")
 st.markdown("### 📋 Trip List")
 
-# 1. THE LEGEND
-# We use HTML/CSS badges to make it look professional
 st.markdown("""
     <style>
         .badge-green {background-color: #d4edda; color: #155724; padding: 4px 8px; border-radius: 4px; font-weight: bold;}
         .badge-yellow {background-color: #fff3cd; color: #856404; padding: 4px 8px; border-radius: 4px; font-weight: bold;}
     </style>
     <p>
-        <span class="badge-green">Processed</span> = Trip ID box is Green &nbsp;&nbsp;&nbsp;
-        <span class="badge-yellow">Pending</span> = Trip ID box is Yellow
+        <span class="badge-green">Processed</span> = Green &nbsp;&nbsp;&nbsp;
+        <span class="badge-yellow">Pending</span> = Yellow
     </p>
 """, unsafe_allow_html=True)
 
-# 2. THE STYLING FUNCTION
 def highlight_trip_id(row):
-    # Default style (transparent)
     styles = [''] * len(row)
-    
-    # Get the column index for trip_id
-    # We only want to color the cell if the column name is 'trip_id'
     if 'status' in row and 'trip_id' in row.index:
         status = str(row['status'])
-        
-        # Define Colors
         if status == 'Processed':
-            color = 'background-color: #d4edda; color: black' # Greenish
+            color = 'background-color: #d4edda; color: black'
         elif status == 'Pending':
-            color = 'background-color: #fff3cd; color: black' # Yellowish
+            color = 'background-color: #fff3cd; color: black'
         else:
-            return styles # Return empty styles if neither
-
-        # Apply the color ONLY to the trip_id column
-        # row.index.get_loc returns the integer position of the column
+            return styles
         try:
             trip_idx = row.index.get_loc('trip_id')
             styles[trip_idx] = color
         except:
-            pass # Safe fail
-            
+            pass
     return styles
-
-# ==========================================
-# 📊 DISPLAY DATA
-# ==========================================
 
 st.markdown(f"**Showing {len(filtered_df)} trip records**")
 
 if 'job_date' in filtered_df.columns:
     filtered_df['job_date'] = filtered_df['job_date'].dt.strftime('%Y-%m-%d')
 
-# Apply the styles
-# We use .style.apply to run our coloring function on every row
 styled_df = filtered_df.style.apply(highlight_trip_id, axis=1)
 
 st.dataframe(
     styled_df, 
     use_container_width=True, 
     hide_index=True,
-    height=800 # Make the table taller
+    height=800
 )
