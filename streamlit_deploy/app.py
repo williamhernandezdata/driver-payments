@@ -74,8 +74,7 @@ with st.expander("Open Search Options", expanded=True):
         nacha_options = ["All"] + sorted(list(df['nacha_title'].astype(str).unique()))
         search_nacha = st.selectbox("xBaa NACHA File", nacha_options)
     with col5:
-        # ACCOUNT FILTER (NEW)
-        # We check if 'account' exists to prevent errors if the sheet isn't updated yet
+        # ACCOUNT FILTER
         if 'account' in df.columns:
             acc_options = ["All"] + sorted(list(df['account'].astype(str).unique()))
             search_account = st.selectbox("🏢 Account", acc_options)
@@ -84,7 +83,7 @@ with st.expander("Open Search Options", expanded=True):
     with col6:
         if 'status' in df.columns:
             status_options = ["All"] + sorted(list(df['status'].astype(str).unique()))
-            search_status = st.selectbox("✅ Status", status_options)
+            search_status = st.selectbox("✅ Payment Status", status_options)
         else:
             search_status = "All"
             
@@ -115,7 +114,6 @@ if search_trip_id:
 if search_nacha != "All":
     filtered_df = filtered_df[filtered_df['nacha_title'].astype(str) == search_nacha]
 
-# NEW ACCOUNT FILTER LOGIC
 if search_account != "All" and 'account' in filtered_df.columns:
     filtered_df = filtered_df[filtered_df['account'].astype(str) == search_account]
 
@@ -163,8 +161,9 @@ st.markdown("""
 
 def highlight_trip_id(row):
     styles = [''] * len(row)
-    if 'status' in row and 'trip_id' in row.index:
-        status = str(row['status'])
+    # Look for the NEW column name "Payment Status"
+    if 'Payment Status' in row and 'trip_id' in row.index:
+        status = str(row['Payment Status'])
         if status == 'Processed':
             color = 'background-color: #d4edda; color: black'
         elif status == 'Pending':
@@ -180,9 +179,22 @@ def highlight_trip_id(row):
 
 st.markdown(f"**Showing {len(filtered_df)} trip records**")
 
+# --- PREPARE DATA FOR DISPLAY ---
+
+# 1. Fix Date Format
 if 'job_date' in filtered_df.columns:
     filtered_df['job_date'] = filtered_df['job_date'].dt.strftime('%Y-%m-%d')
 
+# 2. Rename Column (The request)
+if 'status' in filtered_df.columns:
+    filtered_df = filtered_df.rename(columns={'status': 'Payment Status'})
+
+# 3. FIX THE ERROR: Reset Index
+# This ensures the index is 0, 1, 2, 3... even after filtering.
+# This prevents the "StreamlitAPIException" crash.
+filtered_df = filtered_df.reset_index(drop=True)
+
+# 4. Apply Styles
 styled_df = filtered_df.style.apply(highlight_trip_id, axis=1)
 
 st.dataframe(
