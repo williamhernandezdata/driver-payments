@@ -4,7 +4,6 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- PAGE CONFIG ---
-# We use "centered" layout for the login screen look
 st.set_page_config(page_title="My Driver Portal", layout="centered", page_icon="🚕")
 
 # --- CONFIGURATION ---
@@ -22,7 +21,7 @@ if 'driver_name' not in st.session_state:
 # --- DATA LOADER ---
 @st.cache_data(ttl=600)
 def load_all_data():
-    # Load credentials from Secrets
+    # Load credentials
     secrets = st.secrets["gcp_service_account"]
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_dict(secrets, scope)
@@ -60,7 +59,6 @@ def login_screen():
     
     with st.form("login_form"):
         driver_id_input = st.text_input("Driver ID", placeholder="e.g. 5800905")
-        # We use the 'bank' column (Last 4 digits) as the password
         bank_pin_input = st.text_input("Last 4 Digits of Bank Account", type="password", placeholder="e.g. 1234")
         
         submitted = st.form_submit_button("Log In", use_container_width=True)
@@ -73,23 +71,20 @@ def login_screen():
                     st.error("No data found. Please try again later.")
                     return
 
-                # 1. Check Driver ID (Convert to string to be safe)
-                # We strip whitespace to handle accidental spaces
+                # Verify ID
                 user_df = df[df['driver_num'].astype(str).str.strip() == driver_id_input.strip()]
                 
                 if user_df.empty:
                     st.error("Driver ID not found.")
                 else:
-                    # 2. Check Bank PIN
-                    # We check if ANY of their trips match the bank last 4 provided
+                    # Verify PIN
                     valid_bank = user_df[user_df['bank'].astype(str).str.strip() == bank_pin_input.strip()]
                     
                     if not valid_bank.empty:
-                        # LOGIN SUCCESS
                         st.session_state['logged_in'] = True
-                        st.session_state['driver_data'] = user_df # Store ONLY their data
+                        st.session_state['driver_data'] = user_df 
                         
-                        # Get name for welcome header
+                        # Get name
                         first = user_df.iloc[0]['first_name'] if 'first_name' in user_df.columns else "Driver"
                         last = user_df.iloc[0]['last_name'] if 'last_name' in user_df.columns else ""
                         st.session_state['driver_name'] = f"{first} {last}"
@@ -108,11 +103,24 @@ def dashboard():
 
     df = st.session_state['driver_data']
     
-    # Sort by date
-    if 'job_date' in df.columns:
-        df = df.sort_values(by='job_date', ascending=False)
+    # --- DATE FILTER ---
+    min_date = df['job_date'].min()
+    max_date = df['job_date'].max()
+    
+    date_range = st.date_input(
+        "📅 Filter by Date", 
+        value=[], # Starts empty (shows all)
+        min_value=min_date, 
+        max_value=max_date
+    )
+    
+    # Apply Filter
+    if len(date_range) == 2:
+        start_date, end_date = date_range
+        mask = (df['job_date'].dt.date >= start_date) & (df['job_date'].dt.date <= end_date)
+        df = df[mask]
 
-    # --- TOTALS ---
+    # --- TOTALS (Based on Filter) ---
     st.markdown("### 💰 My Totals")
     c1, c2, c3 = st.columns(3)
     
@@ -126,18 +134,61 @@ def dashboard():
     # --- TABLE ---
     st.markdown("---")
     st.markdown("### 📋 My Trip History")
+
+    # Legend
+    st.markdown("""
+        <style>
+            .badge-green {background-color: #d4edda; color: #155724; padding: 2px 6px; border-radius: 4px; font-size: 12px;}
+            .badge-yellow {background-color: #fff3cd; color: #856404; padding: 2px 6px; border-radius: 4px; font-size: 12px;}
+        </style>
+        <p style='font-size: 14px;'>
+            <span class="badge-green">Processed</span> = Paid &nbsp;&nbsp;
+            <span class="badge-yellow">Pending</span> = Processing
+        </p>
+    """, unsafe_allow_html=True)
     
-    # Format Date for display
+    # Prepare Data
     display_df = df.copy()
+    
     if 'job_date' in display_df.columns:
         display_df['job_date'] = display_df['job_date'].dt.strftime('%Y-%m-%d')
     
-    # Hide internal columns the driver doesn't need to see
+    # Hide internal columns
     hide_cols = ['nacha_title', 'bank', 'routing', 'account', 'driver_num', 'first_name', 'last_name', 'full_name']
     display_df = display_df.drop(columns=[c for c in hide_cols if c in display_df.columns])
 
+    # Rename Status for clarity
+    if 'status' in display_df.columns:
+        display_df = display_df.rename(columns={'status': 'Payment Status'})
+
+    # Reset Index (Prevents crashing on style application)
+    display_df = display_df.reset_index(drop=True)
+
+    # STYLE FUNCTION (Highlight 'total_paid' based on Status)
+    def highlight_paid(row):
+        styles = [''] * len(row)
+        if 'Payment Status' in row and 'total_paid' in row.index:
+            status = str(row['Payment Status'])
+            if status == 'Processed':
+                color = 'background-color: #d4edda; color: black' # Green
+            elif status == 'Pending':
+                color = 'background-color: #fff3cd; color: black' # Yellow
+            else:
+                return styles
+            
+            try:
+                # Apply color to Total Paid column
+                idx = row.index.get_loc('total_paid')
+                styles[idx] = color
+            except:
+                pass
+        return styles
+
+    # Apply Style
+    styled_df = display_df.style.apply(highlight_paid, axis=1)
+
     st.dataframe(
-        display_df,
+        styled_df,
         use_container_width=True,
         hide_index=True,
         height=600,
