@@ -30,13 +30,18 @@ def load_data():
     df = pd.DataFrame(data)
     
     # --- CLEAN DATA TYPES ---
+    # 1. Fix Dates
     if 'job_date' in df.columns:
         df['job_date'] = pd.to_datetime(df['job_date'], errors='coerce')
     
-    money_cols = ['total_paid', 'total_fare', 'coop_commission', 'tips', 'tolls', 'base_fare']
+    # 2. Fix Money Columns (Remove $ and , and make numeric)
+    money_cols = [
+        'total_paid', 'total_fare', 'coop_commission', 'tips', 'tolls', 
+        'base_fare', 'wait_time_pay', 'stops_amount', 'cash_collected', 'darter'
+    ]
+    
     for col in money_cols:
         if col in df.columns:
-            # Clean $ and , then convert to float
             df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False)
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
@@ -89,12 +94,11 @@ with st.expander("Open Search Options", expanded=True):
             search_status = "All"
             
     # Row 3 (Date)
-    # NEW: We set value=[] so it starts empty. 
     min_date = df['job_date'].min()
     max_date = df['job_date'].max()
     date_range = st.date_input(
-        "📅 Date Range (Optional)", 
-        value=[],  # <--- THIS MAKES IT START EMPTY
+        "📅 Date Range", 
+        value=[], # Starts empty
         min_value=min_date, 
         max_value=max_date
     )
@@ -105,6 +109,7 @@ with st.expander("Open Search Options", expanded=True):
 filtered_df = df.copy()
 
 if search_name:
+    # Check if first/last name cols exist, otherwise search global
     if 'first_name' in filtered_df.columns and 'last_name' in filtered_df.columns:
         filtered_df['full_name'] = filtered_df['first_name'].astype(str) + " " + filtered_df['last_name'].astype(str)
         filtered_df = filtered_df[filtered_df['full_name'].str.contains(search_name, case=False, na=False)]
@@ -127,8 +132,7 @@ if search_account != "All" and 'account' in filtered_df.columns:
 if search_status != "All":
     filtered_df = filtered_df[filtered_df['status'].astype(str) == search_status]
 
-# DATE FILTER LOGIC (Updated)
-# Only filter if the user has selected BOTH a start and end date
+# Only filter by date if user picked BOTH start and end
 if len(date_range) == 2:
     start_date, end_date = date_range
     mask = (filtered_df['job_date'].dt.date >= start_date) & (filtered_df['job_date'].dt.date <= end_date)
@@ -157,7 +161,7 @@ m4.metric("Total Tolls", f"${total_tolls_sum:,.2f}")
 st.markdown("---")
 st.markdown("### 📋 Trip List")
 
-# Only show legend if we are going to show colors
+# Only show legend if we are going to show colors (Safe Mode < 2000 rows)
 if len(filtered_df) < 2000:
     st.markdown("""
         <style>
@@ -173,6 +177,7 @@ if len(filtered_df) < 2000:
 # Highlighting function
 def highlight_trip_id(row):
     styles = [''] * len(row)
+    # Check for the Renamed Column "Payment Status"
     if 'Payment Status' in row and 'trip_id' in row.index:
         status = str(row['Payment Status'])
         if status == 'Processed':
@@ -200,7 +205,7 @@ if 'job_date' in filtered_df.columns:
 if 'status' in filtered_df.columns:
     filtered_df = filtered_df.rename(columns={'status': 'Payment Status'})
 
-# 3. Reset Index
+# 3. Reset Index (CRITICAL FIX for StreamlitAPIException)
 filtered_df = filtered_df.reset_index(drop=True)
 
 # 4. DECIDE: TO STYLE OR NOT TO STYLE?
@@ -211,6 +216,7 @@ else:
     final_df = filtered_df
 
 # 5. Display Table with Currency Formatting
+# We added config for ALL financial columns here
 st.dataframe(
     final_df, 
     use_container_width=True, 
@@ -223,5 +229,9 @@ st.dataframe(
         "tips": st.column_config.NumberColumn("Tips", format="$%.2f"),
         "tolls": st.column_config.NumberColumn("Tolls", format="$%.2f"),
         "base_fare": st.column_config.NumberColumn("Base Fare", format="$%.2f"),
+        "wait_time_pay": st.column_config.NumberColumn("Wait Time", format="$%.2f"),
+        "stops_amount": st.column_config.NumberColumn("Stops Amt", format="$%.2f"),
+        "cash_collected": st.column_config.NumberColumn("Cash Coll.", format="$%.2f"),
+        "darter": st.column_config.NumberColumn("Darter", format="$%.2f"),
     }
 )
