@@ -4,23 +4,19 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="My Driver Portal", layout="centered", page_icon="🚕")
+st.set_page_config(page_title="Payment Search", layout="wide", page_icon="🚕")
+st.title("🚕 Driver Trip Payments Portal")
+
+# *** NEW DISCLAIMER ***
+st.info("ℹ️ **Note:** Payment history in this portal is available starting from **March/April 2025**. Older manual payments are not listed here.")
 
 # --- CONFIGURATION ---
 SPREADSHEET_NAME = "Coop trip payments table"
 WORKSHEET_NAME = "data"
 
-# --- SESSION STATE SETUP ---
-if 'logged_in' not in st.session_state:
-    st.session_state['logged_in'] = False
-if 'driver_data' not in st.session_state:
-    st.session_state['driver_data'] = None
-if 'driver_name' not in st.session_state:
-    st.session_state['driver_name'] = ""
-
-# --- DATA LOADER ---
-@st.cache_data(ttl=600)
-def load_all_data():
+# --- LOAD DATA ---
+@st.cache_data(ttl=600) 
+def load_data():
     # Load credentials
     secrets = st.secrets["gcp_service_account"]
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
@@ -29,10 +25,10 @@ def load_all_data():
     
     try:
         sheet = client.open(SPREADSHEET_NAME).worksheet(WORKSHEET_NAME)
-    except Exception as e:
-        st.error("System Maintenance: Could not connect to database.")
-        return pd.DataFrame()
-
+    except gspread.exceptions.WorksheetNotFound:
+        st.error(f"Could not find tab named '{WORKSHEET_NAME}'")
+        st.stop()
+        
     data = sheet.get_all_records()
     df = pd.DataFrame(data)
     
@@ -40,174 +36,206 @@ def load_all_data():
     # 1. Fix Dates
     if 'job_date' in df.columns:
         df['job_date'] = pd.to_datetime(df['job_date'], errors='coerce')
-
-    # 2. Fix Money Columns
-    money_cols = ['total_paid', 'total_fare', 'coop_commission', 'tips', 'tolls', 
-                  'base_fare', 'wait_time_pay', 'stops_amount', 'cash_collected', 'darter']
+    
+    # 2. Fix Money Columns (Remove $ and , and make numeric)
+    money_cols = [
+        'total_paid', 'total_fare', 'coop_commission', 'tips', 'tolls', 
+        'base_fare', 'wait_time_pay', 'stops_amount', 'cash_collected', 'darter'
+    ]
     
     for col in money_cols:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False)
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-            
+        
     return df
 
-# --- SCREEN 1: LOGIN ---
-def login_screen():
-    st.title("🚕 Driver Login")
-    st.markdown("Enter your details to view your payment history.")
-    
-    with st.form("login_form"):
-        driver_id_input = st.text_input("Driver ID", placeholder="e.g. 5800905")
-        bank_pin_input = st.text_input("Last 4 Digits of Bank Account", type="password", placeholder="e.g. 1234")
-        
-        submitted = st.form_submit_button("Log In", use_container_width=True)
-        
-        if submitted:
-            with st.spinner("Verifying credentials..."):
-                df = load_all_data()
-                
-                if df.empty:
-                    st.error("No data found. Please try again later.")
-                    return
+# --- MAIN APP LOGIC ---
+with st.spinner('Fetching latest data from Google Cloud...'):
+    try:
+        df = load_data()
+    except Exception as e:
+        st.error(f"Connection Error: {e}")
+        st.stop()
 
-                # Verify ID
-                user_df = df[df['driver_num'].astype(str).str.strip() == driver_id_input.strip()]
-                
-                if user_df.empty:
-                    st.error("Driver ID not found.")
-                else:
-                    # Verify PIN
-                    valid_bank = user_df[user_df['bank'].astype(str).str.strip() == bank_pin_input.strip()]
-                    
-                    if not valid_bank.empty:
-                        st.session_state['logged_in'] = True
-                        st.session_state['driver_data'] = user_df 
-                        
-                        # Get name
-                        first = user_df.iloc[0]['first_name'] if 'first_name' in user_df.columns else "Driver"
-                        last = user_df.iloc[0]['last_name'] if 'last_name' in user_df.columns else ""
-                        st.session_state['driver_name'] = f"{first} {last}"
-                        st.rerun()
-                    else:
-                        st.error("Incorrect Bank Account digits.")
+if df.empty:
+    st.warning("No data found.")
+    st.stop()
 
-# --- SCREEN 2: DASHBOARD ---
-def dashboard():
-    st.success(f"Welcome, {st.session_state['driver_name']}")
-    
-    if st.button("Log Out"):
-        st.session_state['logged_in'] = False
-        st.session_state['driver_data'] = None
-        st.rerun()
+# ==========================================
+# 🔍 FILTER DASHBOARD
+# ==========================================
+st.markdown("### 🔍 Search Filters")
 
-    df = st.session_state['driver_data']
+with st.expander("Open Search Options", expanded=True):
     
-    # --- DATE FILTER ---
+    # Row 1
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        search_name = st.text_input("👤 Driver Name", placeholder="e.g. Freddy")
+    with col2:
+        search_driver_id = st.text_input("🆔 Driver ID", placeholder="e.g. 5800905")
+    with col3:
+        search_trip_id = st.text_input("🚕 Trip ID", placeholder="e.g. 512345")
+
+    # Row 2
+    col4, col5, col6 = st.columns(3)
+    with col4:
+        nacha_options = ["All"] + sorted(list(df['nacha_title'].astype(str).unique()))
+        search_nacha = st.selectbox("📄 NACHA File", nacha_options)
+    with col5:
+        # ACCOUNT FILTER
+        if 'account' in df.columns:
+            acc_options = ["All"] + sorted(list(df['account'].astype(str).unique()))
+            search_account = st.selectbox("🏢 Account", acc_options)
+        else:
+            search_account = "All"
+    with col6:
+        if 'status' in df.columns:
+            status_options = ["All"] + sorted(list(df['status'].astype(str).unique()))
+            search_status = st.selectbox("✅ Payment Status", status_options)
+        else:
+            search_status = "All"
+            
+    # Row 3 (Date)
     min_date = df['job_date'].min()
     max_date = df['job_date'].max()
-    
     date_range = st.date_input(
-        "📅 Filter by Date", 
-        value=[], # Starts empty (shows all)
+        "📅 Date Range", 
+        value=[], # Starts empty
         min_value=min_date, 
         max_value=max_date
     )
-    
-    # Apply Filter
-    if len(date_range) == 2:
-        start_date, end_date = date_range
-        mask = (df['job_date'].dt.date >= start_date) & (df['job_date'].dt.date <= end_date)
-        df = df[mask]
 
-    # --- TOTALS (Based on Filter) ---
-    st.markdown("### 💰 My Totals")
-    c1, c2, c3 = st.columns(3)
-    
-    total_earned = df['total_paid'].sum() if 'total_paid' in df.columns else 0
-    total_tips = df['tips'].sum() if 'tips' in df.columns else 0
-    
-    c1.metric("Total Earned", f"${total_earned:,.2f}")
-    c2.metric("Total Tips", f"${total_tips:,.2f}")
-    c3.metric("Trips", len(df))
+# ==========================================
+# 🔄 FILTERING LOGIC
+# ==========================================
+filtered_df = df.copy()
 
-    # --- TABLE ---
-    st.markdown("---")
-    st.markdown("### 📋 My Trip History")
+if search_name:
+    # Check if first/last name cols exist, otherwise search global
+    if 'first_name' in filtered_df.columns and 'last_name' in filtered_df.columns:
+        filtered_df['full_name'] = filtered_df['first_name'].astype(str) + " " + filtered_df['last_name'].astype(str)
+        filtered_df = filtered_df[filtered_df['full_name'].str.contains(search_name, case=False, na=False)]
+    else:
+        mask = filtered_df.astype(str).apply(lambda x: x.str.contains(search_name, case=False)).any(axis=1)
+        filtered_df = filtered_df[mask]
 
-    # Legend
+if search_driver_id:
+    filtered_df = filtered_df[filtered_df['driver_num'].astype(str).str.contains(search_driver_id, na=False)]
+
+if search_trip_id:
+    filtered_df = filtered_df[filtered_df['trip_id'].astype(str).str.contains(search_trip_id, na=False)]
+
+if search_nacha != "All":
+    filtered_df = filtered_df[filtered_df['nacha_title'].astype(str) == search_nacha]
+
+if search_account != "All" and 'account' in filtered_df.columns:
+    filtered_df = filtered_df[filtered_df['account'].astype(str) == search_account]
+
+if search_status != "All":
+    filtered_df = filtered_df[filtered_df['status'].astype(str) == search_status]
+
+# Only filter by date if user picked BOTH start and end
+if len(date_range) == 2:
+    start_date, end_date = date_range
+    mask = (filtered_df['job_date'].dt.date >= start_date) & (filtered_df['job_date'].dt.date <= end_date)
+    filtered_df = filtered_df[mask]
+
+# ==========================================
+# 💰 FINANCIAL SUB-TOTALS
+# ==========================================
+st.markdown("---")
+st.markdown("### 💰 Financial Summary")
+
+total_paid_sum = filtered_df['total_paid'].sum() if 'total_paid' in filtered_df.columns else 0
+total_comm_sum = filtered_df['coop_commission'].sum() if 'coop_commission' in filtered_df.columns else 0
+total_tips_sum = filtered_df['tips'].sum() if 'tips' in filtered_df.columns else 0
+total_tolls_sum = filtered_df['tolls'].sum() if 'tolls' in filtered_df.columns else 0
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Total Payout", f"${total_paid_sum:,.2f}")
+m2.metric("Total Commission", f"${total_comm_sum:,.2f}")
+m3.metric("Total Tips", f"${total_tips_sum:,.2f}")
+m4.metric("Total Tolls", f"${total_tolls_sum:,.2f}")
+
+# ==========================================
+# 🎨 COLOR STYLING & LEGEND
+# ==========================================
+st.markdown("---")
+st.markdown("### 📋 Trip List")
+
+# Only show legend if we are going to show colors (Safe Mode < 2000 rows)
+if len(filtered_df) < 2000:
     st.markdown("""
         <style>
-            .badge-green {background-color: #d4edda; color: #155724; padding: 2px 6px; border-radius: 4px; font-size: 12px;}
-            .badge-yellow {background-color: #fff3cd; color: #856404; padding: 2px 6px; border-radius: 4px; font-size: 12px;}
+            .badge-green {background-color: #d4edda; color: #155724; padding: 4px 8px; border-radius: 4px; font-weight: bold;}
+            .badge-yellow {background-color: #fff3cd; color: #856404; padding: 4px 8px; border-radius: 4px; font-weight: bold;}
         </style>
-        <p style='font-size: 14px;'>
-            <span class="badge-green">Processed</span> = Paid &nbsp;&nbsp;
-            <span class="badge-yellow">Pending</span> = Processing
+        <p>
+            <span class="badge-green">Processed</span> = Green &nbsp;&nbsp;&nbsp;
+            <span class="badge-yellow">Pending</span> = Yellow
         </p>
     """, unsafe_allow_html=True)
-    
-    # Prepare Data
-    display_df = df.copy()
-    
-    if 'job_date' in display_df.columns:
-        display_df['job_date'] = display_df['job_date'].dt.strftime('%Y-%m-%d')
-    
-    # Hide internal columns
-    hide_cols = ['nacha_title', 'bank', 'routing', 'account', 'driver_num', 'first_name', 'last_name', 'full_name']
-    display_df = display_df.drop(columns=[c for c in hide_cols if c in display_df.columns])
 
-    # Rename Status for clarity
-    if 'status' in display_df.columns:
-        display_df = display_df.rename(columns={'status': 'Payment Status'})
+# Highlighting function
+def highlight_trip_id(row):
+    styles = [''] * len(row)
+    # Check for the Renamed Column "Payment Status"
+    if 'Payment Status' in row and 'trip_id' in row.index:
+        status = str(row['Payment Status'])
+        if status == 'Processed':
+            color = 'background-color: #d4edda; color: black'
+        elif status == 'Pending':
+            color = 'background-color: #fff3cd; color: black'
+        else:
+            return styles
+        try:
+            trip_idx = row.index.get_loc('trip_id')
+            styles[trip_idx] = color
+        except:
+            pass
+    return styles
 
-    # Reset Index (Prevents crashing on style application)
-    display_df = display_df.reset_index(drop=True)
+st.markdown(f"**Showing {len(filtered_df)} trip records**")
 
-    # STYLE FUNCTION (Highlight 'total_paid' based on Status)
-    def highlight_paid(row):
-        styles = [''] * len(row)
-        if 'Payment Status' in row and 'total_paid' in row.index:
-            status = str(row['Payment Status'])
-            if status == 'Processed':
-                color = 'background-color: #d4edda; color: black' # Green
-            elif status == 'Pending':
-                color = 'background-color: #fff3cd; color: black' # Yellow
-            else:
-                return styles
-            
-            try:
-                # Apply color to Total Paid column
-                idx = row.index.get_loc('total_paid')
-                styles[idx] = color
-            except:
-                pass
-        return styles
+# --- PREPARE DATA FOR DISPLAY ---
 
-    # Apply Style
-    styled_df = display_df.style.apply(highlight_paid, axis=1)
+# 1. Fix Date Format
+if 'job_date' in filtered_df.columns:
+    filtered_df['job_date'] = filtered_df['job_date'].dt.strftime('%Y-%m-%d')
 
-    st.dataframe(
-        styled_df,
-        use_container_width=True,
-        hide_index=True,
-        height=600,
-        column_config={
-            "total_paid": st.column_config.NumberColumn("Paid", format="$%.2f"),
-            "total_fare": st.column_config.NumberColumn("Fare", format="$%.2f"),
-            "coop_commission": st.column_config.NumberColumn("Comm.", format="$%.2f"),
-            "tips": st.column_config.NumberColumn("Tips", format="$%.2f"),
-            "tolls": st.column_config.NumberColumn("Tolls", format="$%.2f"),
-            "base_fare": st.column_config.NumberColumn("Base Fare", format="$%.2f"),
-            "wait_time_pay": st.column_config.NumberColumn("Wait", format="$%.2f"),
-            "stops_amount": st.column_config.NumberColumn("Stops", format="$%.2f"),
-            "cash_collected": st.column_config.NumberColumn("Cash", format="$%.2f"),
-            "darter": st.column_config.NumberColumn("Darter", format="$%.2f"),
-        }
-    )
+# 2. Rename Status Column
+if 'status' in filtered_df.columns:
+    filtered_df = filtered_df.rename(columns={'status': 'Payment Status'})
 
-# --- ROUTER ---
-if st.session_state['logged_in']:
-    dashboard()
+# 3. Reset Index (CRITICAL FIX for StreamlitAPIException)
+filtered_df = filtered_df.reset_index(drop=True)
+
+# 4. DECIDE: TO STYLE OR NOT TO STYLE?
+if len(filtered_df) < 2000:
+    final_df = filtered_df.style.apply(highlight_trip_id, axis=1)
 else:
-    login_screen()
+    st.info("⚠️ **Note:** Colors (Green/Yellow) are disabled because the list is too long. Use search filters to narrow down results and see status colors.")
+    final_df = filtered_df
+
+# 5. Display Table with Currency Formatting
+# We added config for ALL financial columns here
+st.dataframe(
+    final_df, 
+    use_container_width=True, 
+    hide_index=True,
+    height=800,
+    column_config={
+        "total_paid": st.column_config.NumberColumn("Total Paid", format="$%.2f"),
+        "total_fare": st.column_config.NumberColumn("Total Fare", format="$%.2f"),
+        "coop_commission": st.column_config.NumberColumn("Commission", format="$%.2f"),
+        "tips": st.column_config.NumberColumn("Tips", format="$%.2f"),
+        "tolls": st.column_config.NumberColumn("Tolls", format="$%.2f"),
+        "base_fare": st.column_config.NumberColumn("Base Fare", format="$%.2f"),
+        "wait_time_pay": st.column_config.NumberColumn("Wait Time", format="$%.2f"),
+        "stops_amount": st.column_config.NumberColumn("Stops Amt", format="$%.2f"),
+        "cash_collected": st.column_config.NumberColumn("Cash Coll.", format="$%.2f"),
+        "darter": st.column_config.NumberColumn("Darter", format="$%.2f"),
+    }
+)
