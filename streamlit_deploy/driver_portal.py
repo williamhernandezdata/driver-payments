@@ -21,7 +21,6 @@ if 'driver_name' not in st.session_state:
 # --- DATA LOADER ---
 @st.cache_data(ttl=600)
 def load_all_data():
-    # Load credentials
     secrets = st.secrets["gcp_service_account"]
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_dict(secrets, scope)
@@ -37,11 +36,9 @@ def load_all_data():
     df = pd.DataFrame(data)
     
     # --- CLEAN DATA TYPES ---
-    # 1. Fix Dates
     if 'job_date' in df.columns:
         df['job_date'] = pd.to_datetime(df['job_date'], errors='coerce')
 
-    # 2. Fix Money Columns
     money_cols = ['total_paid', 'total_fare', 'coop_commission', 'tips', 'tolls', 
                   'base_fare', 'wait_time_pay', 'stops_amount', 'cash_collected', 'darter']
     
@@ -84,7 +81,6 @@ def login_screen():
                         st.session_state['logged_in'] = True
                         st.session_state['driver_data'] = user_df 
                         
-                        # Get name
                         first = user_df.iloc[0]['first_name'] if 'first_name' in user_df.columns else "Driver"
                         last = user_df.iloc[0]['last_name'] if 'last_name' in user_df.columns else ""
                         st.session_state['driver_name'] = f"{first} {last}"
@@ -95,8 +91,6 @@ def login_screen():
 # --- SCREEN 2: DASHBOARD ---
 def dashboard():
     st.success(f"Welcome, {st.session_state['driver_name']}")
-
-    # *** DISCLAIMER ADDED HERE ***
     st.info("ℹ️ **Note:** This portal shows automated payments starting from **March/April 2025**. For older history, please contact support.")
     
     if st.button("Log Out"):
@@ -106,37 +100,71 @@ def dashboard():
 
     df = st.session_state['driver_data']
     
-    # --- DATE FILTER ---
-    min_date = df['job_date'].min()
-    max_date = df['job_date'].max()
+    # --- FILTERS ---
+    st.markdown("### 🔍 Filter Trips")
     
-    date_range = st.date_input(
-        "📅 Filter by Date", 
-        value=[], # Starts empty (shows all)
-        min_value=min_date, 
-        max_value=max_date
-    )
+    col_date, col_search = st.columns(2)
     
-    # Apply Filter
+    with col_date:
+        min_date = df['job_date'].min()
+        max_date = df['job_date'].max()
+        date_range = st.date_input(
+            "📅 Date Range", 
+            value=[], 
+            min_value=min_date, 
+            max_value=max_date
+        )
+
+    with col_search:
+        # NEW TRIP ID SEARCH
+        trip_search = st.text_input("🚕 Search Trip ID")
+    
+    # Apply Date Filter
     if len(date_range) == 2:
         start_date, end_date = date_range
         mask = (df['job_date'].dt.date >= start_date) & (df['job_date'].dt.date <= end_date)
         df = df[mask]
+        
+    # Apply Trip ID Search
+    if trip_search:
+        df = df[df['trip_id'].astype(str).str.contains(trip_search, na=False)]
 
-    # --- TOTALS (Based on Filter) ---
-    st.markdown("### 💰 My Totals")
-    c1, c2, c3 = st.columns(3)
+    # --- FINANCIAL SUMMARIES ---
+    st.markdown("### 💰 Financial Summary")
     
-    total_earned = df['total_paid'].sum() if 'total_paid' in df.columns else 0
-    total_tips = df['tips'].sum() if 'tips' in df.columns else 0
-    
-    c1.metric("Total Earned", f"${total_earned:,.2f}")
-    c2.metric("Total Tips", f"${total_tips:,.2f}")
-    c3.metric("Trips", len(df))
+    # Calculate Sums based on current filter
+    sum_paid = df['total_paid'].sum() if 'total_paid' in df.columns else 0
+    sum_tips = df['tips'].sum() if 'tips' in df.columns else 0
+    sum_fare = df['total_fare'].sum() if 'total_fare' in df.columns else 0
+    sum_comm = df['coop_commission'].sum() if 'coop_commission' in df.columns else 0
+    sum_tolls = df['tolls'].sum() if 'tolls' in df.columns else 0
+    sum_base = df['base_fare'].sum() if 'base_fare' in df.columns else 0
+    sum_wait = df['wait_time_pay'].sum() if 'wait_time_pay' in df.columns else 0
+    sum_stops = df['stops_amount'].sum() if 'stops_amount' in df.columns else 0
+    sum_cash = df['cash_collected'].sum() if 'cash_collected' in df.columns else 0
+
+    # Row 1: The Big Numbers
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Paid", f"${sum_paid:,.2f}")
+    m2.metric("Tips", f"${sum_tips:,.2f}")
+    m3.metric("Trips", len(df))
+
+    # Row 2: The Breakdown
+    with st.expander("View Full Breakdown"):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Fare", f"${sum_fare:,.2f}")
+        c2.metric("Commission", f"${sum_comm:,.2f}")
+        c3.metric("Tolls", f"${sum_tolls:,.2f}")
+        c4.metric("Base Fare", f"${sum_base:,.2f}")
+        
+        c5, c6, c7, c8 = st.columns(4)
+        c5.metric("Wait Time", f"${sum_wait:,.2f}")
+        c6.metric("Stops", f"${sum_stops:,.2f}")
+        c7.metric("Cash Coll.", f"${sum_cash:,.2f}")
 
     # --- TABLE ---
     st.markdown("---")
-    st.markdown("### 📋 My Trip History")
+    st.markdown("### 📋 Trip List")
 
     # Legend
     st.markdown("""
@@ -162,36 +190,36 @@ def dashboard():
     hide_cols = ['nacha_title', 'bank', 'routing', 'account', 'driver_num', 'first_name', 'last_name', 'full_name']
     display_df = display_df.drop(columns=[c for c in hide_cols if c in display_df.columns])
 
-    # Rename Status for clarity
+    # Rename Status
     if 'status' in display_df.columns:
         display_df = display_df.rename(columns={'status': 'Payment Status'})
 
-    # Reset Index
     display_df = display_df.reset_index(drop=True)
 
-    # STYLE FUNCTION
-    def highlight_paid(row):
+    # STYLE FUNCTION (Highlight Trip ID)
+    def highlight_trip(row):
         styles = [''] * len(row)
-        if 'Payment Status' in row and 'total_paid' in row.index:
+        if 'Payment Status' in row and 'trip_id' in row.index:
             status = str(row['Payment Status'])
             if status == 'Processed':
-                color = 'background-color: #d4edda; color: black' # Green
+                color = 'background-color: #d4edda; color: black' 
             elif status == 'Pending':
-                color = 'background-color: #fff3cd; color: black' # Yellow
+                color = 'background-color: #fff3cd; color: black'
             elif status == 'Failed':
-                color = 'background-color: #f8d7da; color: black' # Red
+                color = 'background-color: #f8d7da; color: black'
             else:
                 return styles
             
             try:
-                idx = row.index.get_loc('total_paid')
+                # Apply color to TRIP ID column
+                idx = row.index.get_loc('trip_id')
                 styles[idx] = color
             except:
                 pass
         return styles
 
     # Apply Style
-    styled_df = display_df.style.apply(highlight_paid, axis=1)
+    styled_df = display_df.style.apply(highlight_trip, axis=1)
 
     st.dataframe(
         styled_df,
