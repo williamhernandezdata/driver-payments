@@ -49,6 +49,31 @@ def load_all_data():
             
     return df
 
+# --- HELPER: FORMAT MONEY ---
+def fmt_money(val, is_negative=False):
+    """Formats number as $1,234.56 or ($1,234.56) if negative context"""
+    if is_negative:
+        return f"(${abs(val):,.2f})"
+    return f"${val:,.2f}"
+
+# --- HELPER: CREATE STATEMENT ROW ---
+def statement_row(label, value, is_bold=False, is_negative=False, color=None):
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        if is_bold:
+            st.markdown(f"**{label}**")
+        else:
+            st.markdown(f"{label}")
+    with c2:
+        val_str = fmt_money(value, is_negative)
+        if is_bold:
+            if color:
+                st.markdown(f":{color}[**{val_str}**]")
+            else:
+                st.markdown(f"**{val_str}**")
+        else:
+            st.markdown(f"{val_str}")
+
 # --- SCREEN 1: LOGIN ---
 def login_screen():
     st.title("🚕 Driver Login")
@@ -101,7 +126,7 @@ def dashboard():
     df = st.session_state['driver_data']
     
     # --- FILTERS ---
-    st.markdown("### 🔍 Filter Trips")
+    st.markdown("### 🔍 Search Filters")
     
     col_date, col_search = st.columns(2)
     
@@ -116,7 +141,6 @@ def dashboard():
         )
 
     with col_search:
-        # NEW TRIP ID SEARCH
         trip_search = st.text_input("🚕 Search Trip ID")
     
     # Apply Date Filter
@@ -129,38 +153,57 @@ def dashboard():
     if trip_search:
         df = df[df['trip_id'].astype(str).str.contains(trip_search, na=False)]
 
-    # --- FINANCIAL SUMMARIES ---
-    st.markdown("### 💰 Financial Summary")
+    # ==========================================
+    # 🧾 FINANCIAL STATEMENT (NEW DESIGN)
+    # ==========================================
+    st.markdown("### 🧾 Payment Statement")
     
-    # Calculate Sums based on current filter
-    sum_paid = df['total_paid'].sum() if 'total_paid' in df.columns else 0
-    sum_tips = df['tips'].sum() if 'tips' in df.columns else 0
-    sum_fare = df['total_fare'].sum() if 'total_fare' in df.columns else 0
-    sum_comm = df['coop_commission'].sum() if 'coop_commission' in df.columns else 0
-    sum_tolls = df['tolls'].sum() if 'tolls' in df.columns else 0
+    # Calculate Sums
     sum_base = df['base_fare'].sum() if 'base_fare' in df.columns else 0
     sum_wait = df['wait_time_pay'].sum() if 'wait_time_pay' in df.columns else 0
     sum_stops = df['stops_amount'].sum() if 'stops_amount' in df.columns else 0
+    sum_tolls = df['tolls'].sum() if 'tolls' in df.columns else 0
+    sum_tips = df['tips'].sum() if 'tips' in df.columns else 0
+    
+    # Deductions
+    sum_comm = df['coop_commission'].sum() if 'coop_commission' in df.columns else 0
     sum_cash = df['cash_collected'].sum() if 'cash_collected' in df.columns else 0
+    
+    # Calculated Totals
+    gross_fare = sum_base + sum_wait + sum_stops + sum_tolls + sum_tips
+    net_deposit = df['total_paid'].sum() if 'total_paid' in df.columns else 0
 
-    # Row 1: The Big Numbers
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Total Paid", f"${sum_paid:,.2f}")
-    m2.metric("Tips", f"${sum_tips:,.2f}")
-    m3.metric("Trips", len(df))
-
-    # Row 2: The Breakdown
-    with st.expander("View Full Breakdown"):
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Fare", f"${sum_fare:,.2f}")
-        c2.metric("Commission", f"${sum_comm:,.2f}")
-        c3.metric("Tolls", f"${sum_tolls:,.2f}")
-        c4.metric("Base Fare", f"${sum_base:,.2f}")
+    # Display as a Receipt Container
+    with st.container(border=True):
+        st.markdown("##### PAYMENT SUMMARY")
         
-        c5, c6, c7, c8 = st.columns(4)
-        c5.metric("Wait Time", f"${sum_wait:,.2f}")
-        c6.metric("Stops", f"${sum_stops:,.2f}")
-        c7.metric("Cash Coll.", f"${sum_cash:,.2f}")
+        # Earnings
+        statement_row("Base Fare:", sum_base)
+        statement_row("Wait Time Paid:", sum_wait)
+        statement_row("Stops Paid:", sum_stops)
+        statement_row("Tolls Paid:", sum_tolls)
+        statement_row("Tips Paid:", sum_tips)
+        
+        st.divider()
+        
+        # Gross Total
+        statement_row("Total Gross Fare:", gross_fare, is_bold=True)
+        
+        st.write("") # Spacer
+        
+        # Deductions (Negative Context)
+        statement_row("Coop Commission:", sum_comm, is_negative=True)
+        statement_row("Cash Collected:", sum_cash, is_negative=True)
+        # If you have routing fees, add them here:
+        # statement_row("Routing Fee:", sum_routing, is_negative=True)
+        
+        st.divider()
+        
+        # FINAL NET
+        statement_row("NET AMOUNT DEPOSITED:", net_deposit, is_bold=True, color="green")
+        
+        # Trip Count Footer
+        st.caption(f"Total Trips in this statement: {len(df)}")
 
     # --- TABLE ---
     st.markdown("---")
@@ -186,11 +229,9 @@ def dashboard():
     if 'job_date' in display_df.columns:
         display_df['job_date'] = display_df['job_date'].dt.strftime('%Y-%m-%d')
     
-    # Hide internal columns
     hide_cols = ['nacha_title', 'bank', 'routing', 'account', 'driver_num', 'first_name', 'last_name', 'full_name']
     display_df = display_df.drop(columns=[c for c in hide_cols if c in display_df.columns])
 
-    # Rename Status
     if 'status' in display_df.columns:
         display_df = display_df.rename(columns={'status': 'Payment Status'})
 
@@ -209,16 +250,13 @@ def dashboard():
                 color = 'background-color: #f8d7da; color: black'
             else:
                 return styles
-            
             try:
-                # Apply color to TRIP ID column
                 idx = row.index.get_loc('trip_id')
                 styles[idx] = color
             except:
                 pass
         return styles
 
-    # Apply Style
     styled_df = display_df.style.apply(highlight_trip, axis=1)
 
     st.dataframe(
