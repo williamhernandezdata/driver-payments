@@ -5,12 +5,14 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
 import time
+from datetime import date, timedelta
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="My Driver Portal", layout="centered", page_icon="🚕")
 
 # --- CONFIGURATION ---
 FILE_ID = "1dwAT9fkfQY-SIOt4KmQ9gE7J4MnVSfP4"
+NACHA_START_DATE = pd.Timestamp("2025-03-28") # The cutoff for accurate financials
 
 # --- SESSION STATE ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
@@ -84,7 +86,7 @@ def login_screen():
         submitted = st.form_submit_button("Log In", use_container_width=True)
         
         if submitted:
-            time.sleep(1.5) 
+            time.sleep(1.0) 
             with st.spinner("Verifying credentials..."):
                 df = load_all_data()
                 if df.empty:
@@ -114,25 +116,46 @@ def login_screen():
 # --- DASHBOARD ---
 def dashboard():
     st.success(f"Welcome, {st.session_state['driver_name']}")
-    st.info("ℹ️ **Note:** This portal shows automated payments starting from **March/April 2025**. For older history, please contact support.")
+    st.info("ℹ️ **Note:** This portal shows automated payments starting from **March/April 2025**.")
     
     if st.button("Log Out"):
         st.session_state['logged_in'] = False
         st.session_state['driver_data'] = None
         st.rerun()
 
+    # 1. FILTER OUT OLD DATA (GLOBAL FIX)
+    # This ensures the totals NEVER include the old, messy data
     df = st.session_state['driver_data']
+    df = df[df['job_date'] >= NACHA_START_DATE]
+
+    # 2. SET UP DATE DEFAULTS (Week-to-Date: Monday to Today)
+    today = date.today()
+    # Find the most recent Monday (0 = Mon, 6 = Sun)
+    # If today is Tuesday (1), we subtract 1 day.
+    days_since_monday = today.weekday() 
+    this_monday = today - timedelta(days=days_since_monday)
     
-    # Filters
+    # --- FILTERS ---
     st.markdown("### 🔍 Filter Trips")
     col_date, col_search = st.columns(2)
     with col_date:
-        min_date = df['job_date'].min()
-        max_date = df['job_date'].max()
-        date_range = st.date_input("📅 Date Range", value=[], min_value=min_date, max_value=max_date)
+        min_date = df['job_date'].min().date() if not df.empty else today
+        max_date = df['job_date'].max().date() if not df.empty else today
+        
+        # Ensure defaults are within the available data range
+        default_start = max(this_monday, min_date)
+        default_end = min(today, max_date)
+        
+        date_range = st.date_input(
+            "📅 Date Range", 
+            value=[default_start, default_end], # Defaults to This Week (Mon-Sun)
+            min_value=min_date, 
+            max_value=max_date
+        )
     with col_search:
         trip_search = st.text_input("🚕 Search Trip ID")
     
+    # Apply Filters
     if len(date_range) == 2:
         s, e = date_range
         df = df[(df['job_date'].dt.date >= s) & (df['job_date'].dt.date <= e)]
@@ -140,7 +163,7 @@ def dashboard():
     if trip_search:
         df = df[df['trip_id'].astype(str).str.contains(trip_search, na=False)]
 
-    # Financial Statement
+    # --- FINANCIAL STATEMENT ---
     st.markdown("### 🧾 Payment Statement")
     
     sum_base = df['base_fare'].sum()
@@ -150,6 +173,7 @@ def dashboard():
     sum_tips = df['tips'].sum()
     sum_comm = df['coop_commission'].sum()
     sum_cash = df['cash_collected'].sum()
+    sum_darter = df['darter'].sum()
     
     gross_fare = sum_base + sum_wait + sum_stops + sum_tolls + sum_tips
     net_deposit = df['total_paid'].sum()
@@ -166,11 +190,12 @@ def dashboard():
         st.write("")
         statement_row("Coop Commission:", sum_comm, is_negative=True)
         statement_row("Cash Collected:", sum_cash, is_negative=True)
+        statement_row("Routing Fee (Darter):", sum_darter, is_negative=True)
         st.divider()
         statement_row("NET AMOUNT DEPOSITED:", net_deposit, is_bold=True, color="green")
         st.caption(f"Total Trips: {len(df)}")
 
-    # Table
+    # --- TABLE ---
     st.markdown("---")
     st.markdown("### 📋 Trip List")
     
@@ -208,7 +233,7 @@ def dashboard():
             except: pass
         return styles
 
-    # *** UPDATED COLUMN CONFIG FOR CURRENCY ***
+    # Forces ALL money columns to display as Currency ($1.00)
     st.dataframe(
         display_df.style.apply(highlight_trip, axis=1), 
         use_container_width=True, 
@@ -216,8 +241,8 @@ def dashboard():
         column_config={
             "total_paid": st.column_config.NumberColumn("Paid", format="$%.2f"),
             "total_fare": st.column_config.NumberColumn("Fare", format="$%.2f"),
-            "tips": st.column_config.NumberColumn("Tips", format="$%.2f"),
             "coop_commission": st.column_config.NumberColumn("Comm.", format="$%.2f"),
+            "tips": st.column_config.NumberColumn("Tips", format="$%.2f"),
             "tolls": st.column_config.NumberColumn("Tolls", format="$%.2f"),
             "base_fare": st.column_config.NumberColumn("Base Fare", format="$%.2f"),
             "wait_time_pay": st.column_config.NumberColumn("Wait", format="$%.2f"),
