@@ -10,7 +10,6 @@ import time
 st.set_page_config(page_title="My Driver Portal", layout="centered", page_icon="🚕")
 
 # --- CONFIGURATION ---
-# The ID of your trip_data_dump.csv on Google Drive
 FILE_ID = "1dwAT9fkfQY-SIOt4KmQ9gE7J4MnVSfP4"
 
 # --- SESSION STATE ---
@@ -18,52 +17,39 @@ if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'driver_data' not in st.session_state: st.session_state['driver_data'] = None
 if 'driver_name' not in st.session_state: st.session_state['driver_name'] = ""
 
-# --- DATA LOADER (The Fixed Version) ---
+# --- DATA LOADER ---
 @st.cache_data(ttl=3600)
 def load_all_data():
-    # 1. Get Credentials
     creds_dict = st.secrets["gcp_service_account"]
     creds = service_account.Credentials.from_service_account_info(
         creds_dict, scopes=['https://www.googleapis.com/auth/drive.readonly']
     )
-    
-    # 2. Connect to Drive
     service = build('drive', 'v3', credentials=creds)
     
     try:
-        # 3. Download CSV
         request = service.files().get_media(fileId=FILE_ID)
         file_obj = io.BytesIO()
         downloader = MediaIoBaseDownload(file_obj, request)
-        
         done = False
-        while not done:
-            status, done = downloader.next_chunk()
-        
+        while not done: status, done = downloader.next_chunk()
         file_obj.seek(0)
         
-        # 4. READ AS STRING (The Critical Fix)
-        # We force dtype=str so '00123' stays '00123' for login matching
+        # Force string to protect ID/Bank matching
         df = pd.read_csv(file_obj, dtype=str, low_memory=False)
         
     except Exception as e:
         st.error("System Maintenance. Please try again later.")
         return pd.DataFrame()
 
-    # 5. CONVERT DATA TYPES FOR DISPLAY
-    # Now that we have the strings safe, we convert ONLY the math columns to numbers
-    
-    # Fix Dates
+    # --- CLEANING ---
     if 'job_date' in df.columns:
         df['job_date'] = pd.to_datetime(df['job_date'], errors='coerce')
 
-    # Fix Money Columns
     money_cols = ['total_paid', 'total_fare', 'coop_commission', 'tips', 'tolls', 
                   'base_fare', 'wait_time_pay', 'stops_amount', 'cash_collected', 'darter']
     
     for col in money_cols:
         if col in df.columns:
-            # Clean '$' and ',' if they exist in the CSV string
             df[col] = df[col].str.replace('$', '', regex=False).str.replace(',', '', regex=False)
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
@@ -87,7 +73,7 @@ def statement_row(label, value, is_bold=False, is_negative=False, color=None):
             else: st.markdown(f"**{val_str}**")
         else: st.markdown(f"{val_str}")
 
-# --- SCREEN 1: LOGIN ---
+# --- LOGIN SCREEN ---
 def login_screen():
     st.title("🚕 Driver Login")
     st.markdown("Enter your details to view your payment history.")
@@ -95,37 +81,29 @@ def login_screen():
     with st.form("login_form"):
         driver_id_input = st.text_input("Driver ID")
         bank_pin_input = st.text_input("Last 4 Digits of Bank Account", type="password")
-        
         submitted = st.form_submit_button("Log In", use_container_width=True)
         
         if submitted:
-            # Security Delay (Anti-Brute Force)
             time.sleep(1.5) 
-            
             with st.spinner("Verifying credentials..."):
                 df = load_all_data()
                 if df.empty:
                     st.error("System offline.")
                     return
 
-                # Clean Inputs
                 u_id = str(driver_id_input).strip()
                 u_bank = str(bank_pin_input).strip()
 
-                # 1. Check Driver ID
-                # Since we forced dtype=str, this match is now exact and safe
                 user_df = df[df['driver_num'].str.strip() == u_id]
                 
                 if user_df.empty:
                     st.error("Login Failed. Please check your ID and Bank details.")
                 else:
-                    # 2. Check Bank PIN
                     valid_bank = user_df[user_df['bank'].str.strip() == u_bank]
                     
                     if not valid_bank.empty:
                         st.session_state['logged_in'] = True
                         st.session_state['driver_data'] = user_df 
-                        
                         first = user_df.iloc[0]['first_name'] if 'first_name' in user_df.columns else "Driver"
                         last = user_df.iloc[0]['last_name'] if 'last_name' in user_df.columns else ""
                         st.session_state['driver_name'] = f"{first} {last}"
@@ -133,7 +111,7 @@ def login_screen():
                     else:
                         st.error("Login Failed. Please check your ID and Bank details.")
 
-# --- SCREEN 2: DASHBOARD ---
+# --- DASHBOARD ---
 def dashboard():
     st.success(f"Welcome, {st.session_state['driver_name']}")
     st.info("ℹ️ **Note:** This portal shows automated payments starting from **March/April 2025**. For older history, please contact support.")
@@ -196,7 +174,6 @@ def dashboard():
     st.markdown("---")
     st.markdown("### 📋 Trip List")
     
-    # Legend
     st.markdown("""
         <style>
             .badge-green {background-color: #d4edda; color: #155724; padding: 2px 6px; border-radius: 4px; font-size: 12px;}
@@ -213,7 +190,6 @@ def dashboard():
     display_df = df.copy()
     if 'job_date' in display_df.columns: display_df['job_date'] = display_df['job_date'].dt.strftime('%Y-%m-%d')
     
-    # Remove internal/duplicate columns from view
     hide = ['nacha_title', 'bank', 'routing', 'account', 'driver_num', 'first_name', 'last_name', 'full_name']
     display_df = display_df.drop(columns=[c for c in hide if c in display_df.columns])
     
@@ -232,8 +208,24 @@ def dashboard():
             except: pass
         return styles
 
-    st.dataframe(display_df.style.apply(highlight_trip, axis=1), use_container_width=True, hide_index=True,
-                 column_config={"total_paid": st.column_config.NumberColumn("Paid", format="$%.2f")})
+    # *** UPDATED COLUMN CONFIG FOR CURRENCY ***
+    st.dataframe(
+        display_df.style.apply(highlight_trip, axis=1), 
+        use_container_width=True, 
+        hide_index=True,
+        column_config={
+            "total_paid": st.column_config.NumberColumn("Paid", format="$%.2f"),
+            "total_fare": st.column_config.NumberColumn("Fare", format="$%.2f"),
+            "tips": st.column_config.NumberColumn("Tips", format="$%.2f"),
+            "coop_commission": st.column_config.NumberColumn("Comm.", format="$%.2f"),
+            "tolls": st.column_config.NumberColumn("Tolls", format="$%.2f"),
+            "base_fare": st.column_config.NumberColumn("Base Fare", format="$%.2f"),
+            "wait_time_pay": st.column_config.NumberColumn("Wait", format="$%.2f"),
+            "stops_amount": st.column_config.NumberColumn("Stops", format="$%.2f"),
+            "cash_collected": st.column_config.NumberColumn("Cash", format="$%.2f"),
+            "darter": st.column_config.NumberColumn("Darter", format="$%.2f"),
+        }
+    )
 
 if st.session_state['logged_in']: dashboard()
 else: login_screen()
