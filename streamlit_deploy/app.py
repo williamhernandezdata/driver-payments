@@ -1,54 +1,61 @@
 import streamlit as st
 import pandas as pd
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+import io
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Payment Search", layout="wide", page_icon="🚕")
 st.title("🚕 Driver Trip Payments Portal")
 
 # --- CONFIGURATION ---
-SPREADSHEET_NAME = "Coop trip payments table"
-WORKSHEET_NAME = "data"
+# The ID of your trip_data_dump.csv on Google Drive
+FILE_ID = "1dwAT9fkfQY-SIOt4KmQ9gE7J4MnVSfP4"
 
-# --- LOAD DATA ---
-@st.cache_data(ttl=600) 
+# --- LOAD DATA (FROM DRIVE) ---
+@st.cache_data(ttl=3600) # Cache for 1 HOUR (Big data takes time to load)
 def load_data():
-    # Load credentials
-    secrets = st.secrets["gcp_service_account"]
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(secrets, scope)
-    client = gspread.authorize(creds)
+    # 1. Get Credentials from Streamlit Secrets
+    creds_dict = st.secrets["gcp_service_account"]
+    creds = service_account.Credentials.from_service_account_info(
+        creds_dict, scopes=['https://www.googleapis.com/auth/drive.readonly']
+    )
     
-    try:
-        sheet = client.open(SPREADSHEET_NAME).worksheet(WORKSHEET_NAME)
-    except gspread.exceptions.WorksheetNotFound:
-        st.error(f"Could not find tab named '{WORKSHEET_NAME}'")
-        st.stop()
+    # 2. Connect to Drive
+    service = build('drive', 'v3', credentials=creds)
+    
+    # 3. Download CSV into Memory
+    request = service.files().get_media(fileId=FILE_ID)
+    file_obj = io.BytesIO()
+    downloader = MediaIoBaseDownload(file_obj, request)
+    
+    done = False
+    while not done:
+        status, done = downloader.next_chunk()
         
-    data = sheet.get_all_records()
-    df = pd.DataFrame(data)
+    file_obj.seek(0)
+    
+    # 4. Read CSV with Pandas
+    # low_memory=False helps with large mixed-type files
+    df = pd.read_csv(file_obj, low_memory=False)
     
     # --- CLEAN DATA TYPES ---
-    # 1. Fix Dates
     if 'job_date' in df.columns:
         df['job_date'] = pd.to_datetime(df['job_date'], errors='coerce')
     
-    # 2. Fix Money Columns (Remove $ and , and make numeric)
-    money_cols = [
-        'total_paid', 'total_fare', 'coop_commission', 'tips', 'tolls', 
-        'base_fare', 'wait_time_pay', 'stops_amount', 'cash_collected', 'darter'
-    ]
+    money_cols = ['total_paid', 'total_fare', 'coop_commission', 'tips', 'tolls', 
+                  'base_fare', 'wait_time_pay', 'stops_amount', 'cash_collected', 'darter']
     
     for col in money_cols:
         if col in df.columns:
-            df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False)
+            # Ensure numeric
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
     return df
 
 # --- MAIN APP LOGIC ---
-with st.spinner('Fetching latest data from Google Cloud...'):
+with st.spinner('Downloading database... (This may take 30 seconds)'):
     try:
         df = load_data()
     except Exception as e:
@@ -78,6 +85,7 @@ with st.expander("Open Search Options", expanded=True):
     # Row 2
     col4, col5, col6 = st.columns(3)
     with col4:
+        # Dropdown options must be strings
         nacha_options = ["All"] + sorted(list(df['nacha_title'].astype(str).unique()))
         search_nacha = st.selectbox("📄 NACHA File", nacha_options)
     with col5:
@@ -98,7 +106,7 @@ with st.expander("Open Search Options", expanded=True):
     max_date = df['job_date'].max()
     date_range = st.date_input(
         "📅 Date Range", 
-        value=[], # Starts empty
+        value=[], 
         min_value=min_date, 
         max_value=max_date
     )
@@ -109,7 +117,6 @@ with st.expander("Open Search Options", expanded=True):
 filtered_df = df.copy()
 
 if search_name:
-    # Check if first/last name cols exist, otherwise search global
     if 'first_name' in filtered_df.columns and 'last_name' in filtered_df.columns:
         filtered_df['full_name'] = filtered_df['first_name'].astype(str) + " " + filtered_df['last_name'].astype(str)
         filtered_df = filtered_df[filtered_df['full_name'].str.contains(search_name, case=False, na=False)]
@@ -132,7 +139,6 @@ if search_account != "All" and 'account' in filtered_df.columns:
 if search_status != "All":
     filtered_df = filtered_df[filtered_df['status'].astype(str) == search_status]
 
-# Only filter by date if user picked BOTH start and end
 if len(date_range) == 2:
     start_date, end_date = date_range
     mask = (filtered_df['job_date'].dt.date >= start_date) & (filtered_df['job_date'].dt.date <= end_date)
@@ -161,7 +167,6 @@ m4.metric("Total Tolls", f"${total_tolls_sum:,.2f}")
 st.markdown("---")
 st.markdown("### 📋 Trip List")
 
-# Only show legend if we are going to show colors (Safe Mode < 2000 rows)
 if len(filtered_df) < 2000:
     st.markdown("""
         <style>
@@ -174,10 +179,8 @@ if len(filtered_df) < 2000:
         </p>
     """, unsafe_allow_html=True)
 
-# Highlighting function
 def highlight_trip_id(row):
     styles = [''] * len(row)
-    # Check for the Renamed Column "Payment Status"
     if 'Payment Status' in row and 'trip_id' in row.index:
         status = str(row['Payment Status'])
         if status == 'Processed':
@@ -195,28 +198,20 @@ def highlight_trip_id(row):
 
 st.markdown(f"**Showing {len(filtered_df)} trip records**")
 
-# --- PREPARE DATA FOR DISPLAY ---
-
-# 1. Fix Date Format
 if 'job_date' in filtered_df.columns:
     filtered_df['job_date'] = filtered_df['job_date'].dt.strftime('%Y-%m-%d')
 
-# 2. Rename Status Column
 if 'status' in filtered_df.columns:
     filtered_df = filtered_df.rename(columns={'status': 'Payment Status'})
 
-# 3. Reset Index (CRITICAL FIX for StreamlitAPIException)
 filtered_df = filtered_df.reset_index(drop=True)
 
-# 4. DECIDE: TO STYLE OR NOT TO STYLE?
 if len(filtered_df) < 2000:
     final_df = filtered_df.style.apply(highlight_trip_id, axis=1)
 else:
-    st.info("⚠️ **Note:** Colors (Green/Yellow) are disabled because the list is too long. Use search filters to narrow down results and see status colors.")
+    st.info("⚠️ **Note:** Colors are disabled for large lists (>2000 rows).")
     final_df = filtered_df
 
-# 5. Display Table with Currency Formatting
-# We added config for ALL financial columns here
 st.dataframe(
     final_df, 
     use_container_width=True, 
