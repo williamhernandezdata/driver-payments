@@ -78,32 +78,24 @@ def get_date_preset(preset_name):
     
     if preset_name == "Today":
         return [today, today]
-    
     elif preset_name == "Yesterday":
         yesterday = today - timedelta(days=1)
         return [yesterday, yesterday]
-    
     elif preset_name == "This Week":
         start = today - timedelta(days=today.weekday()) # Monday
         return [start, today]
-    
     elif preset_name == "Last Week":
         start_last_week = today - timedelta(days=today.weekday() + 7)
         end_last_week = start_last_week + timedelta(days=6)
         return [start_last_week, end_last_week]
-    
     elif preset_name == "This Month":
         start = today.replace(day=1)
         return [start, today]
-    
     elif preset_name == "Last Month":
-        # First day of this month
         first_this = today.replace(day=1)
-        # Last day of prev month is day before first of this month
         end_prev = first_this - timedelta(days=1)
         start_prev = end_prev.replace(day=1)
         return [start_prev, end_prev]
-    
     elif preset_name == "Year to Date":
         start = today.replace(month=1, day=1)
         return [start, today]
@@ -156,40 +148,47 @@ def dashboard():
         st.session_state['driver_data'] = None
         st.rerun()
 
-    # 1. GLOBAL DATA FILTER (NACHA Era)
+    # GLOBAL FILTER
     df = st.session_state['driver_data']
     df = df[df['job_date'] >= NACHA_START_DATE]
 
     st.markdown("### 🔍 Filter Trips")
 
-    # --- NEW DATE FILTER LOGIC ---
     col_preset, col_picker = st.columns([1, 2])
     
     with col_preset:
-        # The Quick Menu
         presets = ["This Week", "Last Week", "Yesterday", "Today", "This Month", "Last Month", "Year to Date", "All Time"]
         selected_preset = st.selectbox("📅 Quick Select", presets, index=0)
     
-    # Calculate dates based on preset
     preset_dates = get_date_preset(selected_preset)
     
-    # Default min/max for the picker bounds
-    min_avail = df['job_date'].min().date() if not df.empty else date.today()
-    max_avail = df['job_date'].max().date() if not df.empty else date.today()
+    # --- FIX 1: SAFE DATE BOUNDARIES ---
+    # Prevent "Max Value < Value" crash if data is old but user selects "Today"
+    today = date.today()
+    data_min = df['job_date'].min().date() if not df.empty else today
+    data_max = df['job_date'].max().date() if not df.empty else today
+    
+    # Allow the picker to go up to TODAY, even if data only exists up to yesterday
+    picker_max = max(data_max, today)
+    picker_min = min(data_min, NACHA_START_DATE.date())
 
     with col_picker:
-        # If "All Time" selected, empty list. Otherwise use calculation.
         default_val = preset_dates if selected_preset != "All Time" else []
         
-        # The actual Date Picker (Users can override the preset here)
+        # Ensure default_val doesn't violate min/max
+        if len(default_val) == 2:
+            start_val = max(default_val[0], picker_min)
+            end_val = min(default_val[1], picker_max)
+            if start_val > end_val: start_val = end_val # Safety check
+            default_val = [start_val, end_val]
+
         date_range = st.date_input(
             "Custom Date Range", 
             value=default_val,
-            min_value=min_avail,
-            max_value=max_avail
+            min_value=picker_min,
+            max_value=picker_max
         )
 
-    # Apply Filter
     trip_search = st.text_input("🚕 Search Trip ID (Optional)")
     
     if len(date_range) == 2:
@@ -199,7 +198,7 @@ def dashboard():
     if trip_search:
         df = df[df['trip_id'].astype(str).str.contains(trip_search, na=False)]
 
-    # --- FINANCIAL STATEMENT ---
+    # FINANCIAL STATEMENT
     st.markdown("### 🧾 Payment Statement")
     
     sum_base = df['base_fare'].sum()
@@ -216,7 +215,6 @@ def dashboard():
 
     with st.container(border=True):
         st.markdown("##### PAYMENT SUMMARY")
-        # Show date range in header
         if len(date_range) == 2:
             st.caption(f"Period: {date_range[0]} to {date_range[1]}")
             
@@ -235,7 +233,7 @@ def dashboard():
         statement_row("NET AMOUNT DEPOSITED:", net_deposit, is_bold=True, color="green")
         st.caption(f"Total Trips: {len(df)}")
 
-    # --- TABLE ---
+    # TABLE
     st.markdown("---")
     st.markdown("### 📋 Trip List")
     
@@ -255,7 +253,8 @@ def dashboard():
     display_df = df.copy()
     if 'job_date' in display_df.columns: display_df['job_date'] = display_df['job_date'].dt.strftime('%Y-%m-%d')
     
-    hide = ['nacha_title', 'bank', 'routing', 'account', 'driver_num', 'first_name', 'last_name', 'full_name']
+    # --- FIX 2: REMOVED 'account' FROM HIDE LIST ---
+    hide = ['nacha_title', 'bank', 'routing', 'driver_num', 'first_name', 'last_name', 'full_name']
     display_df = display_df.drop(columns=[c for c in hide if c in display_df.columns])
     
     if 'status' in display_df.columns: display_df = display_df.rename(columns={'status': 'Payment Status'})
