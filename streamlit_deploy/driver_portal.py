@@ -6,13 +6,14 @@ from googleapiclient.http import MediaIoBaseDownload
 import io
 import time
 from datetime import date, timedelta
+import calendar
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="My Driver Portal", layout="centered", page_icon="🚕")
 
 # --- CONFIGURATION ---
 FILE_ID = "1dwAT9fkfQY-SIOt4KmQ9gE7J4MnVSfP4"
-NACHA_START_DATE = pd.Timestamp("2025-03-28") # The cutoff for accurate financials
+NACHA_START_DATE = pd.Timestamp("2025-03-28") 
 
 # --- SESSION STATE ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
@@ -35,15 +36,11 @@ def load_all_data():
         done = False
         while not done: status, done = downloader.next_chunk()
         file_obj.seek(0)
-        
-        # Force string to protect ID/Bank matching
         df = pd.read_csv(file_obj, dtype=str, low_memory=False)
-        
     except Exception as e:
         st.error("System Maintenance. Please try again later.")
         return pd.DataFrame()
 
-    # --- CLEANING ---
     if 'job_date' in df.columns:
         df['job_date'] = pd.to_datetime(df['job_date'], errors='coerce')
 
@@ -75,6 +72,44 @@ def statement_row(label, value, is_bold=False, is_negative=False, color=None):
             else: st.markdown(f"**{val_str}**")
         else: st.markdown(f"{val_str}")
 
+# --- HELPER: DATE PRESETS ---
+def get_date_preset(preset_name):
+    today = date.today()
+    
+    if preset_name == "Today":
+        return [today, today]
+    
+    elif preset_name == "Yesterday":
+        yesterday = today - timedelta(days=1)
+        return [yesterday, yesterday]
+    
+    elif preset_name == "This Week":
+        start = today - timedelta(days=today.weekday()) # Monday
+        return [start, today]
+    
+    elif preset_name == "Last Week":
+        start_last_week = today - timedelta(days=today.weekday() + 7)
+        end_last_week = start_last_week + timedelta(days=6)
+        return [start_last_week, end_last_week]
+    
+    elif preset_name == "This Month":
+        start = today.replace(day=1)
+        return [start, today]
+    
+    elif preset_name == "Last Month":
+        # First day of this month
+        first_this = today.replace(day=1)
+        # Last day of prev month is day before first of this month
+        end_prev = first_this - timedelta(days=1)
+        start_prev = end_prev.replace(day=1)
+        return [start_prev, end_prev]
+    
+    elif preset_name == "Year to Date":
+        start = today.replace(month=1, day=1)
+        return [start, today]
+    
+    return [] # Custom/All
+
 # --- LOGIN SCREEN ---
 def login_screen():
     st.title("🚕 Driver Login")
@@ -95,14 +130,12 @@ def login_screen():
 
                 u_id = str(driver_id_input).strip()
                 u_bank = str(bank_pin_input).strip()
-
                 user_df = df[df['driver_num'].str.strip() == u_id]
                 
                 if user_df.empty:
-                    st.error("Login Failed. Please check your ID and Bank details.")
+                    st.error("Login Failed. Check Driver ID.")
                 else:
                     valid_bank = user_df[user_df['bank'].str.strip() == u_bank]
-                    
                     if not valid_bank.empty:
                         st.session_state['logged_in'] = True
                         st.session_state['driver_data'] = user_df 
@@ -111,7 +144,7 @@ def login_screen():
                         st.session_state['driver_name'] = f"{first} {last}"
                         st.rerun()
                     else:
-                        st.error("Login Failed. Please check your ID and Bank details.")
+                        st.error("Login Failed. Check Bank digits.")
 
 # --- DASHBOARD ---
 def dashboard():
@@ -123,39 +156,42 @@ def dashboard():
         st.session_state['driver_data'] = None
         st.rerun()
 
-    # 1. FILTER OUT OLD DATA (GLOBAL FIX)
-    # This ensures the totals NEVER include the old, messy data
+    # 1. GLOBAL DATA FILTER (NACHA Era)
     df = st.session_state['driver_data']
     df = df[df['job_date'] >= NACHA_START_DATE]
 
-    # 2. SET UP DATE DEFAULTS (Week-to-Date: Monday to Today)
-    today = date.today()
-    # Find the most recent Monday (0 = Mon, 6 = Sun)
-    # If today is Tuesday (1), we subtract 1 day.
-    days_since_monday = today.weekday() 
-    this_monday = today - timedelta(days=days_since_monday)
-    
-    # --- FILTERS ---
     st.markdown("### 🔍 Filter Trips")
-    col_date, col_search = st.columns(2)
-    with col_date:
-        min_date = df['job_date'].min().date() if not df.empty else today
-        max_date = df['job_date'].max().date() if not df.empty else today
-        
-        # Ensure defaults are within the available data range
-        default_start = max(this_monday, min_date)
-        default_end = min(today, max_date)
-        
-        date_range = st.date_input(
-            "📅 Date Range", 
-            value=[default_start, default_end], # Defaults to This Week (Mon-Sun)
-            min_value=min_date, 
-            max_value=max_date
-        )
-    with col_search:
-        trip_search = st.text_input("🚕 Search Trip ID")
+
+    # --- NEW DATE FILTER LOGIC ---
+    col_preset, col_picker = st.columns([1, 2])
     
-    # Apply Filters
+    with col_preset:
+        # The Quick Menu
+        presets = ["This Week", "Last Week", "Yesterday", "Today", "This Month", "Last Month", "Year to Date", "All Time"]
+        selected_preset = st.selectbox("📅 Quick Select", presets, index=0)
+    
+    # Calculate dates based on preset
+    preset_dates = get_date_preset(selected_preset)
+    
+    # Default min/max for the picker bounds
+    min_avail = df['job_date'].min().date() if not df.empty else date.today()
+    max_avail = df['job_date'].max().date() if not df.empty else date.today()
+
+    with col_picker:
+        # If "All Time" selected, empty list. Otherwise use calculation.
+        default_val = preset_dates if selected_preset != "All Time" else []
+        
+        # The actual Date Picker (Users can override the preset here)
+        date_range = st.date_input(
+            "Custom Date Range", 
+            value=default_val,
+            min_value=min_avail,
+            max_value=max_avail
+        )
+
+    # Apply Filter
+    trip_search = st.text_input("🚕 Search Trip ID (Optional)")
+    
     if len(date_range) == 2:
         s, e = date_range
         df = df[(df['job_date'].dt.date >= s) & (df['job_date'].dt.date <= e)]
@@ -180,6 +216,10 @@ def dashboard():
 
     with st.container(border=True):
         st.markdown("##### PAYMENT SUMMARY")
+        # Show date range in header
+        if len(date_range) == 2:
+            st.caption(f"Period: {date_range[0]} to {date_range[1]}")
+            
         statement_row("Base Fare:", sum_base)
         statement_row("Wait Time Paid:", sum_wait)
         statement_row("Stops Paid:", sum_stops)
@@ -233,7 +273,6 @@ def dashboard():
             except: pass
         return styles
 
-    # Forces ALL money columns to display as Currency ($1.00)
     st.dataframe(
         display_df.style.apply(highlight_trip, axis=1), 
         use_container_width=True, 
